@@ -670,27 +670,39 @@ def read_toml(file_path):
     Args:
         file_path (str): read file form that location
     """
+    with open(file_path, 'r') as f:
+       s = f.read()
+
     # TOML is terrible sometimes... which is why we are doing some fixing of the file that is loaded before parsing
-    file = open(file_path,'r')
-
-    s = file.read()
-    file.close()
-
+    # XXX: Not really clear why this is necessary? (AAH)
     s = s.replace(u'\ufeff', '')
     s = s.replace('(', '[')
     s = s.replace(')', ']')
 
     record = toml.loads(s)
 
-    # Somehow TOML doesnt support numpy. Here is a workaround:
-    for key in record.keys():
-        if isinstance(record[key], dict):
-            for subkey in record[key].keys():
-                record[key][subkey] = _python2numpy_(record[key][subkey])
-        else:
-            record[key] = _python2numpy_(record[key])
-
     return record
+
+
+class TomlFlexEncoder(toml.encoder.TomlEncoder):
+
+    def dump_ml_str(s):
+        ds = toml.encoder._dump_str(s)
+        if '\\n' in ds:
+           new = '"""' + ds[1:-1] + '"""'
+           new = new.replace('\\n', '\n')
+           return new
+        else:
+           return ds
+
+    def __init__(self, _dict=dict, preserve=False):
+        import numpy as np
+        super(TomlFlexEncoder, self).__init__(_dict, preserve)
+        self.dump_funcs[np.float16] = toml.encoder._dump_float
+        self.dump_funcs[np.float32] = toml.encoder._dump_float
+        self.dump_funcs[np.float64] = toml.encoder._dump_float
+        self.dump_funcs[str] = TomlFlexEncoder.dump_ml_str
+
 
 def write_toml(filename, record):
     """
@@ -709,55 +721,12 @@ def write_toml(filename, record):
     if not os.path.exists(path):
         os.makedirs(path)
 
-    # It looks like TOML module doesnt like numpy arrays and numpy types.
-    # Use lists and native types for TOML.
-    #for key in record.keys():
-    #    if isinstance(record[key], dict):
-    #        for subkey in record[key].keys():
-    #            record[key][subkey] = _numpy2python_(record[key][subkey])
-    #    else:
-    #        record[key] = _numpy2python_(record[key])
-
     # Save TOML to a file:
     with open(filename, 'w') as f:
-        d = toml.dumps(record)
+        d = toml.dumps(record, encoder=TomlFlexEncoder())
         f.write(d)
 
-        #toml.dump(meta, f)
 
-def _numpy2python_(numpy_var):
-    """
-    Small utility to translate numpy to standard python (needed for TOML compatibility)
-    """
-    # TOML parcer doesnt like tuples:
-    if isinstance(numpy_var, tuple):
-        numpy_var = list(numpy.round(numpy_var, 6))
-
-    # Numpy array:
-    if isinstance(numpy_var, numpy.ndarray):
-        numpy_var = numpy.round(numpy_var, 6).tolist()
-
-    # Numpy scalar:
-    if isinstance(numpy_var, numpy.generic):
-        numpy_var = numpy.round(numpy_var, 6).item()
-
-    # If list still use round:
-    if isinstance(numpy_var, list):
-        for ii in range(len(numpy_var)):
-            if type(numpy_var[ii]) == 'float':
-                numpy_var[ii] = numpy.round(numpy_var[ii], 6)
-
-    return numpy_var
-
-def _python2numpy_(var):
-    """
-    Small utility to translate standard python to numpy (needed for TOML compatibility)
-    """
-    # Numpy array:
-    if isinstance(var, list):
-        var = numpy.array(var, type(var[0]))
-
-    return var
 
 def write_astra(filename, data_shape, geom):
     """
